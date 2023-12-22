@@ -9,6 +9,7 @@ module Main where
 import Parse (parseFiles)
 import OptionParser
 
+import Data.Data (Data)
 import Language.Haskell.Exts
 import Data.Generics.PlateData (universeBi)
 import Text.Dot
@@ -16,9 +17,11 @@ import Data.List
 import Data.Maybe
 import Control.Monad
 
+type L = SrcSpanInfo
+
 main = do
   (Mode output trim exts, root, files) <- getOpts
-  types <- parseFiles exts files
+  types <- (parseFiles exts files :: IO [Decl L])
   let trimmed = if trim 
                 then doTrim types
                 else types
@@ -26,21 +29,23 @@ main = do
   writeFile output graph
 
 -- | Trim declarations, removing those types and newtypes that do not have references to other user-defined types
-doTrim :: [Decl] -> [Decl]
+doTrim :: [(Decl L)] -> [(Decl L)]
 doTrim types = if types' == types then types
                                   else doTrim types'
   where
     types' = types \\ (filter boring candidates)
     candidates = [ d | d <- types
                      , getDeclType d `elem` ["type", "newtype"] ]
-    boring d = null $ catMaybes $ [ findDecl (prettyPrint qname) types | TyCon qname <- universeBi d ]
+    uniBi :: Decl L -> [Type L]
+    uniBi = universeBi
+    boring d = null $ catMaybes $ [ findDecl (prettyPrint qname) types | TyCon _ qname <- uniBi d ]
 
 type DeclName = String
 type Graph = String
 
 -- | Builds dependency graph starting with datatype declaration `root'.
 -- Recursively expands all user-defined `types' referenced from `root', up to `depth'
-buildGraph :: [Decl]    -- ^ All declarations found in source files
+buildGraph :: [(Decl L)]    -- ^ All declarations found in source files
            -> DeclName  -- ^ Start from this declaration
            -> Graph     -- ^ Graph definition in DOT syntax
 buildGraph types root =
@@ -93,7 +98,7 @@ type Clusters = [(DeclName, (NodeId, NodeId))]
 -- | Add dangling `links' to the graph, adding new clusters as needed
 addLinks :: Links -- ^ Links to be added to the graph
          -> Clusters -- ^ Clusters already present in graph
-         -> [Decl]  -- ^ All declarations parsed from source files
+         -> [(Decl L)]  -- ^ All declarations parsed from source files
          -> Dot ()
 addLinks [] clusters types = return ()
 addLinks links@((DL target mkLink):rest) clusters types =
@@ -110,17 +115,17 @@ addLinks links@((DL target mkLink):rest) clusters types =
 
 -- | Each "record" node in the dot file could be decomposed into several fields.
 -- Each field represents a Haskell record field, Haskell datatype component or Haskell type declaration
-data Field = F { fieldName::Maybe Name -- ^ name of the Haskell record field, empty otherwise
-               , fieldPort::Maybe Port -- ^ dot-specific ID of the field, for anchoring originating links. Empty when field has some unknown type
-               , typeName::DeclName    -- ^ user-friendly name of the Haskell type
-               , fieldLink::[Maybe (NodeId -> DanglingLink)] -- ^ As soon as DOT record is finished, its node id is substituted here to
-                                                             -- obtain a dangling link to target declaration. Empty when field has some unknown type
-               }
+data Field l = F { fieldName::Maybe String -- ^ name of the Haskell record field, empty otherwise
+                 , fieldPort::Maybe Port -- ^ dot-specific ID of the field, for anchoring originating links. Empty when field has some unknown type
+                 , typeName::DeclName    -- ^ user-friendly name of the Haskell type
+                 , fieldLink::[Maybe (NodeId -> DanglingLink)] -- ^ As soon as DOT record is finished, its node id is substituted here to
+                                                               -- obtain a dangling link to target declaration. Empty when field has some unknown type
+                 }
 
 -- | Add a single declaration to graph. As it was already said, each declaration is mapped to a DOT cluster
 addDecl :: DeclName -- ^ Name of the declaration we are adding
         -> Clusters -- ^ Declarations already added to graph
-        -> [Decl]   -- ^ All known declarations
+        -> [(Decl L)]   -- ^ All known declarations
         -> Dot (Links,Clusters) -- ^ ( Links dangling from this declaration, Updated list of clusters )
 addDecl declName clusters decls = do
   ( clusterId, (firstNodeId, danglingLinks) ) <- mkCluster
@@ -140,7 +145,7 @@ addDecl declName clusters decls = do
       if declType == "type"
          then do
            -- For simple type declaration, convert all type components to DOT record fields
-           let (TypeDecl _ _ _ t) = d
+           let (TypeDecl _ _ t) = d
            let fs = type2fields 0 t
            -- Then, convert DOT fields to DOT record.
            -- Type components will be separated into different "cells" of the record, so that
@@ -148,11 +153,13 @@ addDecl declName clusters decls = do
            mkRecord ( mkLabel fs ) fs
          else do
            -- For data/newtype declaration, create a single record for each constructor.
-           (constructorNodes, links) <- liftM unzip $ sequence $ [ addConstructor x | x <- universeBi d ]
+           let uniBi :: Decl L -> [ConDecl L]
+               uniBi = universeBi
+           (constructorNodes, links) <- liftM unzip $ sequence $ [ addConstructor x | x <- uniBi d ]
            -- Collect all outgoing links.
            return (head constructorNodes, concat links)
 
-    mkRecord :: String -> [Field] -> Dot (NodeId, Links)
+    mkRecord :: String -> [Field l] -> Dot (NodeId, Links)
     mkRecord label fs = do
       -- Create DOT record node
       rId <- record label
@@ -163,7 +170,7 @@ addDecl declName clusters decls = do
     -- Produce label for record.
     -- Since label has both human-readable components and special markup that defines record shape,
     -- special care should be taken while combining information from separate fields:
-    mkLabel :: [Field] -> String
+    mkLabel :: [Field L] -> String
     mkLabel fs = wrap $ toLabel $ map mkComponent fs
       where
         mkComponent field 
@@ -172,7 +179,7 @@ addDecl declName clusters decls = do
             -- If field is named, that we should take care to:
             -- 1)Preserve position of the topmost port
             -- 2)Enclose all complex declarations in {}
-          | otherwise = let fn = fromName $ fromJust $ fieldName field -- Haskell field name
+          | otherwise = let fn = fromJust $ fieldName field -- Haskell field name
                             t = typeName field -- Haskell type
                             text = case head t of
                                      -- If the type is complex (Map Foo Bar), include complex description as DOT subfield
@@ -193,11 +200,12 @@ addDecl declName clusters decls = do
                 _   -> block
 
     -- TODO: add InfixConDecl
-    addConstructor (ConDecl nm types) = do
+    addConstructor (ConDecl _ nm types) = do
       let fs = concat $ zipWith type2fields [0..] types
       fields2record ("constructor " ++ fromName nm) fs
-    addConstructor (RecDecl nm types) = do
-      let fs = zipWith rectype2field [0..] types
+    addConstructor (RecDecl _ nm types) = do
+      let fs :: [Field L]
+          fs = zipWith rectype2field [0..] types
       fields2record ("record " ++ fromName nm) fs
 
     -- DOT records for Haskell data and Haskell record have "header" with the name of the constructor
@@ -206,7 +214,9 @@ addDecl declName clusters decls = do
     -- Collect all type constructors mentioned in type and convert them into DOT fields.
     -- `x' would be explained below
     type2fields x t = map (tyCon2field x) cons
-      where cons = [ prettyPrint qname | TyCon qname <- universeBi t ] -- TODO: process TyInfix as well
+      where cons = [ prettyPrint qname | TyCon _ qname <- uniBi t ] -- TODO: process TyInfix as well
+            uniBi :: Type L -> [Type L]
+            uniBi = universeBi
 
     -- Convert type `typeName' into DOT field
     tyCon2field x typeName =
@@ -221,15 +231,15 @@ addDecl declName clusters decls = do
         port = concat [ "<", typeName, show x, "> " ]
 
     -- Convert Haskell record field into DOT record field
-    rectype2field x (nms,t) =
+    rectype2field x (FieldDecl _ nms t) =
       let fs = type2fields x t -- first, conver all type components into fields
           fName = concat $ intersperse ", " $ map prettyPrint nms -- there might be more that one Haskell field name ("a,b::Int")
           fLabel = mkLabel fs  -- produce proper DOT description of the type
           in case fs of
                -- If it is a simple one-component type, just add a record name and be done with it
-               [f] -> f { fieldName=(Just $ name fName) }
+               [f] -> f { fieldName=(Just $ fName) }
                -- If it is multi-component type, ...
-               _   -> F { fieldName=(Just $ name fName) -- add record name, ...
+               _   -> F { fieldName=(Just $ fName) -- add record name, ...
                         , fieldPort=Nothing
                         , typeName=fLabel               -- save type description
                         , fieldLink = (concatMap fieldLink fs) -- collect all links from all type components
@@ -256,14 +266,19 @@ block x = "{ " ++ x ++ " }"
 findDecl nm decls = find ((==nm).getName) decls
 
 -- | Get declaration name
-getName (DataDecl _ _ _ nm _ _ _) = fromName nm
-getName (TypeDecl _ nm _ _) = fromName nm
+getName (DataDecl _ _ _ dh _ _) = fromDeclHead dh
+getName (TypeDecl _ dh _) = fromDeclHead dh
 
 -- | Get declaration .. ummm .. type. Pretty self-explanatory
-getDeclType (DataDecl _ DataType _ _ _ _ _) = "data"
-getDeclType (DataDecl _ NewType _ _ _ _ _)  = "newtype"
-getDeclType (TypeDecl _ _ _ _)              = "type"
+getDeclType (DataDecl _ (DataType {}) _ _ _ _) = "data"
+getDeclType (DataDecl _ (NewType {}) _ _ _ _)  = "newtype"
+getDeclType (TypeDecl {})                      = "type"
+
+fromDeclHead dh = head $ [fromName nm | DHead _ nm <- uniBi dh] ++ ["<unknown name>"]
+  where
+    uniBi :: DeclHead L -> [DeclHead L]
+    uniBi = universeBi
 
 -- | Get name out of the Name datatype
-fromName (Ident x) = x
-fromName (Symbol x) = x
+fromName (Ident _ x) = x
+fromName (Symbol _ x) = x

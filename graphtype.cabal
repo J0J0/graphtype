@@ -1,19 +1,17 @@
 Name:                graphtype
-Version:             0.2.0
+Version:             0.3.0
 copyright:           (c) 2009,2010 Dmitry Astapov
 Synopsis:            A simple tool to illustrate dependencies between Haskell types
 Description:         This tools produces diagrams of Haskell type interdependencies in the given source.
                      Actual drawing is done by graphviz tools (dot).
-Category:            Text
 License:             BSD3
 License-file:        LICENSE
 Author:              Dmitry Astapov
-Maintainer:          Max Desyatov <explicitcall at gmail.com>
-Stability:           alpha
 build-type: 	     Simple
-homepage:            http://github.com/explicitcall/graphtype
-bug-reports:         http://github.com/explicitcall/graphtype/issues
-cabal-version:       >= 1.6
+homepage:            http://github.com/J0J0/graphtype
+cabal-version:       2.0
+
+tested-with:         GHC == 9.0.2
 
 extra-source-files:
         README
@@ -28,7 +26,11 @@ Executable graphtype
   other-modules:
         Parse
         OptionParser
-  Build-Depends:       base >=3 && <5 , haskell-src-exts, uniplate, containers, haskell98, dotgen >= 0.4.1
+  Build-Depends:       base >=4.5 && <5,
+                       haskell-src-exts ^>= 1.18.0,
+                       uniplate,
+                       containers,
+                       dotgen >= 0.4.1
 
 source-repository head
   type:      git

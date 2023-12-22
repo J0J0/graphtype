@@ -2,11 +2,13 @@
 module Parse (parseFiles) where
 
 import Language.Haskell.Exts
+import Data.Data (Data)
 import Data.Generics.PlateData (universeBi)
 import Control.Monad (liftM)
 import System.Exit (exitFailure)
+import Debug.Trace
 
-parseFiles :: Maybe [Extension] -> [FilePath] -> IO [Decl]
+parseFiles :: Maybe [Extension] -> [FilePath] -> IO [Decl SrcSpanInfo]
 parseFiles exts = liftM concat . mapM parseFile'
   where
     parser = case exts of
@@ -23,10 +25,11 @@ parseFiles exts = liftM concat . mapM parseFile'
                              ]
           exitFailure
 
-collectDeclarations moduleDesc =
-  [ x | x <- universeBi moduleDesc, isDeclaration x]
+collectDeclarations :: Data l => Module l -> [Decl l]
+collectDeclarations (Module _ _ _ _ decls) =
+  [ x | x <- universeBi decls, isDeclaration x]
   where
-    isDeclaration (DataDecl _ _ _ _ _ _ _) = True
-    isDeclaration (TypeDecl _ _ _ _) = True
+    isDeclaration (DataDecl {}) = True
+    isDeclaration (TypeDecl {}) = True
     isDeclaration _ = False
-
+collectDeclarations _ = []
