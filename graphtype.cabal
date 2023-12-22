@@ -23,11 +23,12 @@ extra-source-files:
 Executable graphtype
   hs-source-dirs:	     src
   Main-is:             GraphType.hs
+  default-language:    Haskell2010
   other-modules:
         Parse
         OptionParser
   Build-Depends:       base >=4.5 && <5,
-                       haskell-src-exts ^>= 1.18.0,
+                       haskell-src-exts >= 1.21.1,
                        uniplate,
                        containers,
                        dotgen >= 0.4.1
